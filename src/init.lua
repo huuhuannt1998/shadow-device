@@ -12,7 +12,7 @@ local discovery = require "discovery"
 -----------------------------------------------------------------
 -- this is called once a device is added by the cloud and synchronized down to the hub
 local function device_added(driver, device)
-  log.info("[" .. device.id .. "] Adding new Hello World device")
+  log.info("[" .. device.id .. "] Adding new Test device")
 
   -- set a default or queried state for each capability attribute
   device:emit_event(capabilities.switch.switch.on())
@@ -20,7 +20,7 @@ end
 
 -- this is called both when a device is added (but after `added`) and after a hub reboots.
 local function device_init(driver, device)
-  log.info("[" .. device.id .. "] Initializing Hello World device")
+  log.info("[" .. device.id .. "] Initializing Test device")
 
   -- mark device as online so it can be controlled from the app
   device:online()
@@ -28,11 +28,11 @@ end
 
 -- this is called when a device is removed by the cloud and synchronized down to the hub
 local function device_removed(driver, device)
-  log.info("[" .. device.id .. "] Removing Hello World device")
+  log.info("[" .. device.id .. "] Removing Test device")
 end
 
 -- create the driver object
-local hello_world_driver = Driver("helloworld", {
+local test_device_driver = Driver("testdevice", {
   discovery = discovery.handle_discovery,
   lifecycle_handlers = {
     added = device_added,
@@ -48,4 +48,4 @@ local hello_world_driver = Driver("helloworld", {
 })
 
 -- run the driver
-hello_world_driver:run()
+test_device_driver:run()
