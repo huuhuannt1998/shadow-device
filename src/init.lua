@@ -6,6 +6,7 @@ local log = require "log"
 -- require custom handlers from driver package
 local command_handlers = require "command_handlers"
 local discovery = require "discovery"
+local protocol = require "protocol"
 
 -----------------------------------------------------------------
 -- local functions
