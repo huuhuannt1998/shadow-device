@@ -1,4 +1,27 @@
 local log = require "log"
+local cosock = require "cosock"
+local socket = require "cosock.socket"
+local http = cosock.asyncify "socket.http"
+local ltn12 = require "ltn12"
+local log = require "log"
+local tablefind = require "util".tablefind
+local mac_equal = require "util".mac_equal
+local utils = require "st.utils"
+local xml2lua = require "xml2lua"
+local xml_handler = require "xmlhandler.tree"
+
+local ControlMessageTypes = {
+  Scan = "scan",
+  FindDevice = "findDevice",
+}
+
+local ControlMessageBuilders = {
+  Scan = function(reply_tx) return { type = ControlMessageTypes.Scan, reply_tx = reply_tx } end,
+  FindDevice = function(device_id, reply_tx)
+    return { type = ControlMessageTypes.FindDevice, device_id = device_id, reply_tx = reply_tx }
+  end,
+}
+
 local discovery = {}
 
 -- handle discovery events, normally you'd try to discover devices on your
