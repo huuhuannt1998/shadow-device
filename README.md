@@ -1,4 +1,6 @@
-# Hello World Example
+# Update 03/12/2023
 
-This example is used in the [Get Started with SmartThings Edge](https://developer-preview.smartthings.com/docs/devices/hub-connected/get-started)
-guide.
+- Installed thingsim
+  Note: Install extra packages: luacat, and luasocket
+- Problem:
+  - Cannot connect virtual bulbs from thingsim because missing PORT (ttyUSB0)
