@@ -1,52 +1,116 @@
--- require st provided libraries
+-- init.lua
 local capabilities = require "st.capabilities"
 local Driver = require "st.driver"
 local log = require "log"
 
--- require custom handlers from driver package
-local command_handlers = require "command_handlers"
-local discovery = require "discovery"
-local protocol = require "protocol"
+-- search network for specific thing using custom discovery library
+local function find_thing(id)
+  -- use our discovery function to find all of our devices
+  local things = discovery.find({id})
+  if not things then
+    -- return early if discovery fails
+    return nil
+  end
+  -- return the first entry in our things list
+  return table.remove(thing_ids)
+end
 
------------------------------------------------------------------
--- local functions
------------------------------------------------------------------
--- this is called once a device is added by the cloud and synchronized down to the hub
+-- get an rpc client for thing if thing is reachable on the network
+local function get_thing_client(device)
+  local thingclient = device:get_field("client")
+
+  if not thingclient then
+    local thing = find_thing(device.device_network_id)
+    if thing then
+      thingclient = client.new(thing.ip, thing.rpcport)
+      device:set_field("client", thingclient)
+
+      -- tell device health to mark device online so users can control
+      device:online()
+    end
+  end
+
+  if not thingclient then
+    -- tell device health to mark device offline so users will see that it
+    -- can't currently be controlled
+    device:offline()
+    return nil, "unable to reach thing"
+  end
+
+  return thingclient
+end
+
+-- handle setup for newly added devices (before device_init)
 local function device_added(driver, device)
-  log.info("[" .. device.id .. "] Adding new Test device")
-
-  -- set a default or queried state for each capability attribute
-  device:emit_event(capabilities.switch.switch.on())
+  log.info("[" .. tostring(device.id) .. "] New ThingSim RPC Client device added")
 end
 
--- this is called both when a device is added (but after `added`) and after a hub reboots.
+-- initialize device at startup or when added
 local function device_init(driver, device)
-  log.info("[" .. device.id .. "] Initializing Test device")
+  log.info("[" .. tostring(device.id) .. "] Initializing ThingSim RPC Client device")
 
-  -- mark device as online so it can be controlled from the app
-  device:online()
+  local client = get_thing_client(device)
+
+  if client then
+    log.info("Connected")
+
+    -- get current state and emit in case it has changed
+    local attrs = client:getattr({"power"})
+    if attrs and attrs.power == "on" then
+      device:emit_event(capabilities.switch.switch.on())
+    else
+      device:emit_event(capabilities.switch.switch.off())
+    end
+  else
+    log.warn(
+      "Device not found at initial discovery (no async events until controlled)",
+      device:get_field("name") or device.device_network_id
+    )
+  end
 end
 
--- this is called when a device is removed by the cloud and synchronized down to the hub
-local function device_removed(driver, device)
-  log.info("[" .. device.id .. "] Removing Test device")
+
+local function handle_on(driver, device, command)
+  log.info("switch on", device.id)
+
+  local client = assert(get_thing_client(device))
+  if client:setattr{power = "on"} then
+    device:emit_event(capabilities.switch.switch.on())
+  else
+    log.error("failed to set power on")
+  end
 end
 
--- create the driver object
-local test_device_driver = Driver("testdevice", {
-  discovery = discovery.handle_discovery,
-  lifecycle_handlers = {
-    added = device_added,
-    init = device_init,
-    removed = device_removed
-  },
-  capability_handlers = {
-    [capabilities.switch.ID] = {
-      [capabilities.switch.commands.on.NAME] = command_handlers.switch_on,
-      [capabilities.switch.commands.off.NAME] = command_handlers.switch_off,
-    },
-  }
-})
+local function handle_off(driver, device, command)
+  log.info("switch off", device.id)
 
--- run the driver
-test_device_driver:run()
+  local client = assert(get_thing_client(device))
+  if client:setattr{power = "off"} then
+    device:emit_event(capabilities.switch.switch.off())
+  else
+    log.error("failed to set power on")
+  end
+end
+
+
+
+-- Driver library initialization
+local example_driver =
+  Driver("example_driver",
+    {
+      lifecycle_handlers = {
+        added = device_added,
+        init = device_init,
+      },
+      capability_handlers = {
+        [capabilities.switch.ID] = {
+          [capabilities.switch.commands.on.NAME] = handle_on,
+          [capabilities.switch.commands.off.NAME] = handle_off
+        }
+      }
+    }
+  )
+
+
+
+example_driver:run()

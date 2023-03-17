@@ -1,51 +1,13 @@
+local socket = require "socket"
 local log = require "log"
-local cosock = require "cosock"
-local socket = require "cosock.socket"
-local http = cosock.asyncify "socket.http"
-local ltn12 = require "ltn12"
-local log = require "log"
-local tablefind = require "util".tablefind
-local mac_equal = require "util".mac_equal
-local utils = require "st.utils"
-local xml2lua = require "xml2lua"
-local xml_handler = require "xmlhandler.tree"
 
-local ControlMessageTypes = {
-  Scan = "scan",
-  FindDevice = "findDevice",
-}
+local SEARCH_RESPONSE_WAIT = 2 -- seconds, max time devices will wait before responding
 
-local ControlMessageBuilders = {
-  Scan = function(reply_tx) return { type = ControlMessageTypes.Scan, reply_tx = reply_tx } end,
-  FindDevice = function(device_id, reply_tx)
-    return { type = ControlMessageTypes.FindDevice, device_id = device_id, reply_tx = reply_tx }
-  end,
-}
+--------------------------------------------------------------------------------------------
+-- ThingSim device discovery
+--------------------------------------------------------------------------------------------
 
-local discovery = {}
-
-local function send_disco_request()
-  local listen_ip = "0.0.0.0"
-  local listen_port = 0
-  local multicast_ip = "239.255.255.250"
-  local multicast_port = 1900
-  local multicast_msg = table.concat(
-    {
-      'M-SEARCH * HTTP/1.1',
-      'HOST: 239.255.255.250:1900',
-      'MAN: "ssdp:discover"',
-      'MX: 4',
-      'ST: urn:Belkin:device:*',
-      '\r\n'
-    },
-    "\r\n"
-  )
-  local sock = assert(socket.udp(), "create discovery socket")
-  assert(sock:setsockname(listen_ip, listen_port), "disco| socket setsockname")
-  local timeouttime = socket.gettime() + 5 -- 5 second timeout, `MX` + 1 for network delay
-  assert(sock:sendto(multicast_msg, multicast_ip, multicast_port))
-  return sock, timeouttime
-end
+local looking_for_all = setmetatable({}, {__index = function() return true end})
 
 local function process_response(val)
   local info = {}
@@ -56,72 +18,84 @@ local function process_response(val)
   return info
 end
 
-function Discovery.fetch_device_metadata(url)
-  -- Wemo responds with chunked encoding, must use ltn12 sink
-  local responsechunks = {}
-  local _, status, _ = http.request {
-    url = url,
-    sink = ltn12.sink.table(responsechunks),
-  }
-
-  local response = table.concat(responsechunks)
-
-  -- errors are coming back as literal string "[string "socket"]:1239: closed"
-  -- instead of just "closed", so do a `find` for the error
-  if string.find(status, "closed") then
-    log.debug("disco| ignoring unexpected socket close during metadata fetch, try parsing anyway")
-    -- this workaround is required because wemo doesn't send the required zero-length chunk
-    -- at the end of it `Text-Encoding: Chunked` HTTP message, it just closes the socket,
-    -- so ignore closed errors
-  elseif status ~= 200 then
-    log.error("disco| metadata request failed (" .. tostring(status) .. ")\n" .. response)
-    return nil, "request failed: " .. tostring(status)
+local function device_discovery_metadata_generator(thing_ids, callback)
+  local looking_for = {}
+  local number_looking_for
+  local number_found = 0
+  if thing_ids ~= nil then
+    number_looking_for = #thing_ids
+    for _, id in ipairs(thing_ids) do looking_for[id] = true end
+  else
+    looking_for = looking_for_all
+    number_looking_for = math.maxinteger
   end
 
-  local handler = xml_handler:new()
-  local xml_parser = xml2lua.parser(handler)
-  xml_parser:parse(response)
+  local s = socket.udp()
+  assert(s)
+  local listen_ip = interface or "0.0.0.0"
+  local listen_port = 0
 
-  if not handler.root then
-    log.error("disco| unable to parse device metadata as xml")
-    return nil, "xml parse error"
+  local multicast_ip = "239.255.255.250"
+  local multicast_port = 1900
+  local multicast_msg =
+  'M-SEARCH * HTTP/1.1\r\n' ..
+  'HOST: 239.255.255.250:1982\r\n' ..
+  'MAN: "ssdp:discover"\r\n' ..
+  'MX: '..SEARCH_RESPONSE_WAIT..'\r\n' ..
+  'ST: urn:smartthings-com:device:thingsim:1\r\n'
+
+  -- Create bind local ip and port
+  -- simulator will unicast back to this ip and port
+  assert(s:setsockname(listen_ip, listen_port))
+  -- add a second to timeout to account for network & processing latency
+  local timeouttime = socket.gettime() + SEARCH_RESPONSE_WAIT + 1
+  s:settimeout(SEARCH_RESPONSE_WAIT + 1)
+
+  local ids_found = {} -- used to filter duplicates
+  assert(s:sendto(multicast_msg, multicast_ip, multicast_port))
+  while number_found < number_looking_for do
+    local time_remaining = math.max(0, timeouttime-socket.gettime())
+    s:settimeout(time_remaining)
+    local val, rip, rport = s:receivefrom()
+    if val then
+      log.trace(val)
+      local headers = process_response(val)
+      local ip, port = headers["location"]:match("http://([^,]+):([^/]+)")
+      local rpcip, rpcport = (headers["rpc.smartthings.com"] or ""):match("rpc://([^,]+):([^/]+)")
+      local httpip, httpport = (headers["http.smartthings.com"] or ""):match("http://([^,]+):([^/]+)")
+      local id = headers["usn"]:match("uuid:([^:]+)")
+      local name = headers["name.smartthings.com"]
+
+      if rip ~= ip then
+        log.warn("received discovery response with reported & source IP mismatch, ignoring")
+      elseif ip and port and id and looking_for[id] and not ids_found[id] then
+        ids_found[id] = true
+              number_found = number_found + 1
+        callback({id = id, ip = ip, port = port, rpcport = rpcport, httpport = httpport, name = name})
+      else
+        log.debug("found device not looking for:", id)
+      end
+    elseif rip == "timeout" then
+      return nil
+    else
+      error(string.format("error receiving discovery replies: %s", rip))
+    end
   end
-
-  local parsed_xml = handler.root
-
-  -- check if we parsed a <root> element
-  if not parsed_xml.root then
-    return nil
-  end
-
-  return {
-    name = tablefind(parsed_xml, "root.device.friendlyName"),
-    model = tablefind(parsed_xml, "root.device.modelName"),
-    mac = tablefind(parsed_xml, "root.device.macAddress"),
-    serial_num = tablefind(parsed_xml, "root.device.serialNumber"),
-  }
 end
 
--- handle discovery events, normally you'd try to discover devices on your
--- network in a loop until calling `should_continue()` returns false.
-function discovery.handle_discovery(driver, _should_continue)
-  log.info("Starting Test-device Discovery")
-
-  local metadata = {
-    type = "LAN",
-    -- the DNI must be unique across your hub, using static ID here so that we
-    -- only ever have a single instance of this "device"
-    device_network_id = "Test device",
-    label = "Test Device",
-    profile = "test-device.v1",
-    manufacturer = "SmartThings",
-    model = "v1",
-    vendor_provided_label = nil
-  }
-
-  -- tell the cloud to create a new device record, will get synced back down
-  -- and `device_added` and `device_init` callbacks will be called
-  driver:try_create_device(metadata)
+local function find_cb(thing_ids, cb)
+  device_discovery_metadata_generator(thing_ids, cb)
 end
 
-return discovery
+local function find(thing_ids)
+  local thingsmeta = {}
+  local function cb(metadata) table.insert(thingsmeta, metadata) end
+  find_cb(thing_ids, cb)
+  return thingsmeta
+end
+
+
+return {
+  find = find,
+  find_cb = find_cb,
+}
