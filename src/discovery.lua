@@ -1,7 +1,5 @@
-local socket = require "socket"
-local log = require "log"
-
-local SEARCH_RESPONSE_WAIT = 2 -- seconds, max time devices will wait before responding
+local socket = require("socket")
+local log = require("log")
 
 --------------------------------------------------------------------------------------------
 -- ThingSim device discovery
@@ -41,15 +39,14 @@ local function device_discovery_metadata_generator(thing_ids, callback)
   'M-SEARCH * HTTP/1.1\r\n' ..
   'HOST: 239.255.255.250:1982\r\n' ..
   'MAN: "ssdp:discover"\r\n' ..
-  'MX: '..SEARCH_RESPONSE_WAIT..'\r\n' ..
+  'MX: 1\r\n' ..
   'ST: urn:smartthings-com:device:thingsim:1\r\n'
 
   -- Create bind local ip and port
   -- simulator will unicast back to this ip and port
   assert(s:setsockname(listen_ip, listen_port))
-  -- add a second to timeout to account for network & processing latency
-  local timeouttime = socket.gettime() + SEARCH_RESPONSE_WAIT + 1
-  s:settimeout(SEARCH_RESPONSE_WAIT + 1)
+  local timeouttime = socket.gettime() + 8
+  s:settimeout(8)
 
   local ids_found = {} -- used to filter duplicates
   assert(s:sendto(multicast_msg, multicast_ip, multicast_port))
@@ -67,10 +64,12 @@ local function device_discovery_metadata_generator(thing_ids, callback)
       local name = headers["name.smartthings.com"]
 
       if rip ~= ip then
-        log.warn("received discovery response with reported & source IP mismatch, ignoring")
+        log.warn("recieved discovery response with reported & source IP mismatch, ignoring")
       elseif ip and port and id and looking_for[id] and not ids_found[id] then
         ids_found[id] = true
-              number_found = number_found + 1
+	      number_found = number_found + 1
+        -- TODO: figure out if it's possible to make recursive coroutines work inside cosock
+        --coroutine.yield({ip = ip, port = port, info = info})
         callback({id = id, ip = ip, port = port, rpcport = rpcport, httpport = httpport, name = name})
       else
         log.debug("found device not looking for:", id)
@@ -78,7 +77,7 @@ local function device_discovery_metadata_generator(thing_ids, callback)
     elseif rip == "timeout" then
       return nil
     else
-      error(string.format("error receiving discovery replies: %s", rip))
+      error(string.format("error receving discovery replies: %s", rip))
     end
   end
 end
