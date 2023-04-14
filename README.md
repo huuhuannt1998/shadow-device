@@ -10,3 +10,8 @@
 - Drivers using thingsim and example of RPC cannot be installed on Smartthings app by scanning
 - Update driver based on hello-world
 - Problem: cannot add driver using Smartthings app
+
+# Update 04/13/2023
+
+- Update shadow device using thingsim simulator
+- Created a device for collecting message 

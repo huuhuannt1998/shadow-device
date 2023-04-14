@@ -1,4 +1,5 @@
-name: 'Hello World'
-packageKey: 'com.smartthings.helloworld'
+name: 'ThingSim RPC Client'
+packageKey: 'com.smartthings.thingsim.rpcclient'
 permissions:
+  lan: {}
   discovery: {}
